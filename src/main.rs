@@ -1,4 +1,4 @@
-//! Blinks the LED on a Pico board
+//! Run the etch-rs hardware
 #![no_std]
 #![no_main]
 
@@ -9,12 +9,11 @@ use embedded_hal::digital::InputPin;
 use embedded_hal::digital::OutputPin;
 use panic_probe as _;
 
-use ra8875::RA8875;
 // Provide an alias for our BSP so we can switch targets quickly.
 use rp_pico as bsp;
 
-use bsp::hal;
 use bsp::hal::{
+    self,
     clocks::{init_clocks_and_plls, Clock},
     pac,
     sio::Sio,
@@ -23,9 +22,6 @@ use bsp::hal::{
 
 // Needed for specifying SPI rates with MHz function
 use hal::fugit::RateExtU32;
-
-// Needed for spi.write()
-use cortex_m::prelude::*;
 
 mod ra8875;
 
@@ -63,17 +59,14 @@ fn main() -> ! {
     let mut led_pin = pins.led.into_push_pull_output();
     let mut a_pin = pins.gpio14.into_pull_up_input();
 
-    // Blink 5 times
-    for _ in 1..6 {
-        if a_pin.is_low().unwrap() {
-            info!("off!");
-            led_pin.set_low().unwrap();
-        } else {
-            info!("on!");
-            led_pin.set_high().unwrap();
-        }
-        delay.delay_ms(1);
+    if a_pin.is_low().unwrap() {
+        info!("off!");
+        led_pin.set_low().unwrap();
+    } else {
+        info!("on!");
+        led_pin.set_high().unwrap();
     }
+    delay.delay_ms(1);
 
     // Set up SPI
     let spi_mosi = pins.gpio19.into_function::<hal::gpio::FunctionSpi>();
@@ -94,11 +87,11 @@ fn main() -> ! {
     let spi = spi.init(
         &mut pac.RESETS,
         clocks.peripheral_clock.freq(),
-        16.MHz(),
+        2.MHz(),
         embedded_hal::spi::MODE_0,
     );
 
-    let mut tft = RA8875::new(spi, cs_pin);
+    let mut tft = ra8875::RA8875::new(spi, cs_pin);
 
     let x: u8 = tft.read_reg(0);
 
@@ -113,9 +106,26 @@ fn main() -> ! {
         }
     }
 
+    tft.initialize();
+    // initialize requires a delay after, should ideally enforce this but ok for now
+    delay.delay_ms(500);
+    // done with begin() function
+
+    tft.display_on(true);
+    // Enable TFT - display enable tied to GPIOX
+    tft.gpio_x(true);
+    // PWM output for backlight
+    tft.pwm1_config(true, ra8875::RA8875_PWM_CLK_DIV1024);
+    tft.pwm1_out(255);
+
     loop {
-        cortex_m::asm::wfi();
+        // With hardware accelleration this is instant
+        tft.fill_screen(ra8875::RA8875_WHITE);
+        led_pin.set_high().unwrap();
+        delay.delay_ms(1000);
+
+        tft.fill_screen(ra8875::RA8875_RED);
+        led_pin.set_low().unwrap();
+        delay.delay_ms(1000);
     }
 }
-
-// End of file
