@@ -9,6 +9,8 @@ use embedded_hal::digital::InputPin;
 use embedded_hal::digital::OutputPin;
 use panic_probe as _;
 
+use ra8875::LCD_HEIGHT;
+use ra8875::LCD_WIDTH;
 // Provide an alias for our BSP so we can switch targets quickly.
 use rp_pico as bsp;
 
@@ -118,14 +120,29 @@ fn main() -> ! {
     tft.pwm1_config(true, ra8875::RA8875_PWM_CLK_DIV1024);
     tft.pwm1_out(255);
 
-    loop {
-        // With hardware accelleration this is instant
-        tft.fill_screen(ra8875::RA8875_WHITE);
-        led_pin.set_high().unwrap();
-        delay.delay_ms(1000);
+    // With hardware accelleration this is instant
+    tft.fill_screen(ra8875::RA8875_WHITE);
+    led_pin.set_high().unwrap();
+    delay.delay_ms(1000);
 
-        tft.fill_screen(ra8875::RA8875_RED);
-        led_pin.set_low().unwrap();
-        delay.delay_ms(1000);
+    tft.fill_screen(0xAD6F);
+    led_pin.set_low().unwrap();
+    delay.delay_ms(1000);
+
+    let mut i: i16 = 0;
+    let mut j: i16 = 5;
+
+    loop {
+        tft.draw_pixel(
+            i % ra8875::LCD_WIDTH,
+            (i + j) % LCD_HEIGHT,
+            ra8875::RA8875_BLACK,
+        );
+        i += 1;
+        if i > LCD_WIDTH {
+            i -= LCD_WIDTH;
+            j += 5;
+        }
+        delay.delay_ms(10)
     }
 }

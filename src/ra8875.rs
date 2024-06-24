@@ -1,22 +1,15 @@
 // Functions for controlling a TFT display via the RA8875
 // Reference https://github.com/adafruit/Adafruit_RA8875/tree/master
 
-use rp_pico as bsp;
-
-use bsp::hal::spi;
 use embedded_hal::digital::OutputPin;
 use embedded_hal::spi::SpiBus;
 
 use cortex_m;
 
-// Needed for spi.write()
-use cortex_m::prelude::*;
-
-const LCD_WIDTH: i16 = 800;
-const LCD_HEIGHT: i16 = 480;
+pub const LCD_WIDTH: i16 = 800;
+pub const LCD_HEIGHT: i16 = 480;
 
 // Colors (RGB565)
-///< Black Color
 pub const RA8875_BLACK: u16 = 0x0000;
 pub const RA8875_BLUE: u16 = 0x001F;
 pub const RA8875_RED: u16 = 0xF800;
@@ -355,6 +348,20 @@ where
     // Set the duty cycle of the PWM 1 Clock
     pub fn pwm1_out(&mut self, p: u8) {
         self.write_reg(RA8875_P1DCR, p);
+    }
+
+    // Draws a single pixel at the specified location
+    pub fn draw_pixel(&mut self, x: i16, y: i16, color: u16) {
+        self.write_reg(RA8875_CURH0, x as u8);
+        self.write_reg(RA8875_CURH1, (x >> 8) as u8);
+        self.write_reg(RA8875_CURV0, y as u8);
+        self.write_reg(RA8875_CURV1, (y >> 8) as u8);
+        self.write_command(RA8875_MRWC);
+        self.cs_pin.set_low().unwrap();
+        let _ = self
+            .spi_controller
+            .write(&[RA8875_DATAWRITE, (color >> 8) as u8, color as u8]);
+        self.cs_pin.set_high().unwrap();
     }
 
     // Fills the screen with the spefied RGB565 color
