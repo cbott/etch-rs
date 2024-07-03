@@ -208,11 +208,13 @@ where
     pub fn write_command(&mut self, d: u8) {
         // set CS pin low
         self.cs_pin.set_low().unwrap();
+        cortex_m::asm::delay(400);
 
         // Transfer the write command identifier, followed by the specified command
         let _ = self.spi_controller.write(&[RA8875_CMDWRITE, d]);
 
         // set CS pin high
+        cortex_m::asm::delay(400);
         self.cs_pin.set_high().unwrap();
     }
 
@@ -220,6 +222,7 @@ where
     pub fn read_data(&mut self) -> u8 {
         // set CS pin low
         self.cs_pin.set_low().unwrap();
+        cortex_m::asm::delay(400);
 
         let _ = self.spi_controller.write(&[RA8875_DATAREAD]);
 
@@ -227,6 +230,7 @@ where
         let _ = self.spi_controller.transfer_in_place(&mut buf);
 
         // set CS pin high
+        cortex_m::asm::delay(400);
         self.cs_pin.set_high().unwrap();
 
         buf[0]
@@ -236,11 +240,13 @@ where
     pub fn write_data(&mut self, d: u8) {
         // set CS pin low
         self.cs_pin.set_low().unwrap();
+        cortex_m::asm::delay(400);
 
         // Transfer the write command identifier, followed by the specified command
         let _ = self.spi_controller.write(&[RA8875_DATAWRITE, d]);
 
         // set CS pin high
+        cortex_m::asm::delay(400);
         self.cs_pin.set_high().unwrap();
     }
 
@@ -358,9 +364,11 @@ where
         self.write_reg(RA8875_CURV1, (y >> 8) as u8);
         self.write_command(RA8875_MRWC);
         self.cs_pin.set_low().unwrap();
+        cortex_m::asm::delay(400);
         let _ = self
             .spi_controller
             .write(&[RA8875_DATAWRITE, (color >> 8) as u8, color as u8]);
+        cortex_m::asm::delay(400);
         self.cs_pin.set_high().unwrap();
     }
 

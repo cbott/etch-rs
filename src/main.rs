@@ -5,8 +5,10 @@
 // Provide an alias for our BSP so we can switch targets quickly.
 use rp_pico as bsp;
 
+// TODO: organize and clean up imports
 use bsp::entry;
 use core::cell::RefCell;
+use core::convert::Infallible;
 use critical_section::Mutex;
 use defmt::*;
 use defmt_rtt as _;
@@ -29,6 +31,7 @@ use hal::fugit::RateExtU32;
 use bsp::hal::pac::interrupt;
 use core::ops::DerefMut;
 
+mod encoder;
 mod ra8875;
 
 // Pin types quickly become very long!
@@ -38,17 +41,12 @@ type Encoder1BPin = gpio::Pin<gpio::bank0::Gpio8, gpio::FunctionSioInput, gpio::
 type Encoder2APin = gpio::Pin<gpio::bank0::Gpio13, gpio::FunctionSioInput, gpio::PullUp>;
 type Encoder2BPin = gpio::Pin<gpio::bank0::Gpio14, gpio::FunctionSioInput, gpio::PullUp>;
 type LedPin = gpio::Pin<gpio::bank0::Gpio11, gpio::FunctionSioOutput, gpio::PullNone>;
+type MyEncoder = encoder::Encoder<Encoder1APin, Encoder1BPin>;
 
 /// Since we're always accessing these pins together we'll store them in a tuple.
 /// Giving this tuple a type alias means we won't need to use () when putting them
 /// inside an Option. That will be easier to read.
-type InterruptPins = (
-    LedPin,
-    Encoder1APin,
-    Encoder1BPin,
-    Encoder2APin,
-    Encoder2BPin,
-);
+type InterruptPins = (LedPin, MyEncoder, Encoder2APin, Encoder2BPin);
 
 /// This how we transfer our pins to the Interrupt Handler.
 /// We'll have the option hold both using the InterruptPins type.
@@ -97,6 +95,14 @@ fn main() -> ! {
     let pin_2a: Encoder2APin = pins.gpio13.reconfigure();
     let pin_2b: Encoder2BPin = pins.gpio14.reconfigure();
 
+    // Set up our GPIO interrupt stuff
+    pin_1a.set_interrupt_enabled(gpio::Interrupt::EdgeHigh, true);
+    pin_1a.set_interrupt_enabled(gpio::Interrupt::EdgeLow, true);
+    pin_2a.set_interrupt_enabled(gpio::Interrupt::EdgeHigh, true);
+    pin_2a.set_interrupt_enabled(gpio::Interrupt::EdgeLow, true);
+
+    let mut encoder1 = encoder::Encoder::new(pin_1a, pin_1b);
+
     // Set up SPI
     let spi_mosi = pins.gpio19.into_function::<hal::gpio::FunctionSpi>();
     let spi_miso = pins.gpio16.into_function::<hal::gpio::FunctionSpi>();
@@ -137,7 +143,8 @@ fn main() -> ! {
 
     tft.initialize();
     // initialize requires a delay after, should ideally enforce this but ok for now
-    delay.delay_ms(500);
+    // TODO: verify delay. Adafruit library does 500ms but 50 seems to work
+    delay.delay_ms(50);
     // done with begin() function
 
     tft.display_on(true);
@@ -147,23 +154,16 @@ fn main() -> ! {
     tft.pwm1_config(true, ra8875::RA8875_PWM_CLK_DIV1024);
     tft.pwm1_out(255);
 
-    // With hardware accelleration this is instant
+    // debug
     tft.fill_screen(ra8875::RA8875_YELLOW);
-    led_pin.set_high().unwrap();
     delay.delay_ms(1000);
-
-    // Set up our GPIO interrupt stuff
-    pin_1a.set_interrupt_enabled(gpio::Interrupt::EdgeHigh, true);
-    pin_1a.set_interrupt_enabled(gpio::Interrupt::EdgeLow, true);
-    pin_2a.set_interrupt_enabled(gpio::Interrupt::EdgeHigh, true);
-    pin_2a.set_interrupt_enabled(gpio::Interrupt::EdgeLow, true);
 
     // Give away our pins by moving them into the `GLOBAL_PINS` variable.
     // We won't need to access them in the main thread again
     critical_section::with(|cs| {
         GLOBAL_PINS
             .borrow(cs)
-            .replace(Some((led_a, pin_1a, pin_1b, pin_2a, pin_2b)));
+            .replace(Some((led_a, encoder1, pin_2a, pin_2b)));
         GLOBAL_VALUES.borrow(cs).replace(Some((25, 25)));
     });
 
@@ -220,9 +220,10 @@ fn IO_IRQ_BANK0() {
         // borrow led and button by *destructuring* the tuple
         // these will be of type `&mut XXPin` so we don't have
         // to move them back into the static after we use them
-        let (led_a, pin_1a, pin_1b, pin_2a, pin_2b) = gpios;
+        let (led_a, encoder1, pin_2a, pin_2b) = gpios;
 
         // Process encoder 1 (X)
+        let result = encoder1.process();
         if pin_1a.interrupt_status(gpio::Interrupt::EdgeHigh)
             | pin_1a.interrupt_status(gpio::Interrupt::EdgeLow)
         {
