@@ -5,12 +5,13 @@ A digital etch-a-sketch, programmed in Rust
 # To Do list
 ## Software
 - Resolve jumpy encoder response
-- Correct cursor speed
-- Split encoder into separate class
-- Organization and cleanup
-- Resolve issues with optimized compilation
 - Accelerometer code
+- Correct cursor speed
+- Organization and cleanup
 - Use PIO for encoders
+
+- Resolve issues with optimized compilation
+- Split encoder into separate class
 
 ## Electrical
 - Create schematic
@@ -20,10 +21,10 @@ A digital etch-a-sketch, programmed in Rust
 - Custom PCB?
 
 ## Hardware
-- Model electrical parts
 - Create enclosure CAD
 - Print enclosure and fitup testing
 
+- Model electrical parts
 
 ## Parts
 instead make this Part (including link) and quantity?

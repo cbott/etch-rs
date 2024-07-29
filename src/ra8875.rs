@@ -204,20 +204,6 @@ where
         self.write_data(val);
     }
 
-    // Write a command to the current register
-    pub fn write_command(&mut self, d: u8) {
-        // set CS pin low
-        self.cs_pin.set_low().unwrap();
-        cortex_m::asm::delay(400);
-
-        // Transfer the write command identifier, followed by the specified command
-        let _ = self.spi_controller.write(&[RA8875_CMDWRITE, d]);
-
-        // set CS pin high
-        cortex_m::asm::delay(400);
-        self.cs_pin.set_high().unwrap();
-    }
-
     // Read the data from the current register
     pub fn read_data(&mut self) -> u8 {
         // set CS pin low
@@ -236,18 +222,30 @@ where
         buf[0]
     }
 
-    // Write data to the current register
-    pub fn write_data(&mut self, d: u8) {
+    // Helper function to set chip select and write data over SPI
+    fn write(&mut self, words: &[u8]) {
         // set CS pin low
         self.cs_pin.set_low().unwrap();
+        // Delay for RA8875 to start listening after chip select is set
+        // TODO: derive better value
         cortex_m::asm::delay(400);
-
         // Transfer the write command identifier, followed by the specified command
-        let _ = self.spi_controller.write(&[RA8875_DATAWRITE, d]);
-
-        // set CS pin high
+        let _ = self.spi_controller.write(words);
+        // set CS pin high after RA8875 processing delay
         cortex_m::asm::delay(400);
         self.cs_pin.set_high().unwrap();
+    }
+
+    // Write a command to the current register
+    pub fn write_command(&mut self, d: u8) {
+        // Transfer the write command identifier, followed by the specified command
+        self.write(&[RA8875_CMDWRITE, d]);
+    }
+
+    // Write data to the current register
+    pub fn write_data(&mut self, d: u8) {
+        // Transfer the write data identifier, followed by the specified data
+        self.write(&[RA8875_DATAWRITE, d]);
     }
 
     // Initialise the PLL
@@ -363,13 +361,7 @@ where
         self.write_reg(RA8875_CURV0, y as u8);
         self.write_reg(RA8875_CURV1, (y >> 8) as u8);
         self.write_command(RA8875_MRWC);
-        self.cs_pin.set_low().unwrap();
-        cortex_m::asm::delay(400);
-        let _ = self
-            .spi_controller
-            .write(&[RA8875_DATAWRITE, (color >> 8) as u8, color as u8]);
-        cortex_m::asm::delay(400);
-        self.cs_pin.set_high().unwrap();
+        self.write(&[RA8875_DATAWRITE, (color >> 8) as u8, color as u8]);
     }
 
     // Fills the screen with the spefied RGB565 color

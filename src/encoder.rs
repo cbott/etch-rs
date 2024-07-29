@@ -3,18 +3,18 @@
 use bsp::hal::gpio::{self, FunctionSioInput, Pin, PullUp};
 use core::convert::Infallible;
 use embedded_hal::digital::InputPin;
-use rp_pico as bsp;
+use rp_pico::{self as bsp, hal::gpio::PinId};
 // Interrupt macro
 use bsp::hal::pac::interrupt;
 use core::ops::DerefMut;
 
 // Values returned by 'process'
 // No complete step yet.
-const DIR_NONE: u8 = 0x0;
+pub const DIR_NONE: u8 = 0x0;
 // Clockwise step.
-const DIR_CW: u8 = 0x10;
+pub const DIR_CW: u8 = 0x10;
 // Anti-clockwise step.
-const DIR_CCW: u8 = 0x20;
+pub const DIR_CCW: u8 = 0x20;
 
 // Use the half-step state table (emits a code at 00 and 11)
 const R_START: u8 = 0x0;
@@ -39,27 +39,43 @@ const TTABLE: [[u8; 4]; 6] = [
     [R_START_M, R_CCW_BEGIN_M, R_START_M, R_START | DIR_CCW],
 ];
 
-pub struct Encoder<P1, P2>
+pub struct Encoder<I1, I2>
 where
-    P1: InputPin<Error = Infallible>,
-    P2: InputPin<Error = Infallible>,
+    I1: PinId,
+    I2: PinId,
 {
-    pin1: P1,
-    pin2: P2,
+    pub pin1: Pin<I1, FunctionSioInput, gpio::PullUp>,
+    pub pin2: Pin<I2, FunctionSioInput, gpio::PullUp>,
     state: u8,
 }
 
-impl<P1, P2> Encoder<P1, P2>
+impl<I1, I2> Encoder<I1, I2>
 where
-    P1: InputPin<Error = Infallible>,
-    P2: InputPin<Error = Infallible>,
+    I1: PinId,
+    I2: PinId,
 {
-    pub fn new(pin1: P1, pin2: P2) -> Self {
+    pub fn new(
+        pin1: Pin<I1, gpio::FunctionSio<gpio::SioInput>, PullUp>,
+        pin2: Pin<I2, gpio::FunctionSio<gpio::SioInput>, PullUp>,
+    ) -> Self {
         Self {
             pin1: pin1,
             pin2: pin2,
             state: R_START,
         }
+    }
+
+    pub fn enable_interrupts(&mut self) {
+        // TODO: either remove this and handle all interrupt things in main
+        // or else pull in all interrupt handling code. Weird to mix them.
+        self.pin1
+            .set_interrupt_enabled(gpio::Interrupt::EdgeLow, true);
+        self.pin1
+            .set_interrupt_enabled(gpio::Interrupt::EdgeHigh, true);
+        self.pin2
+            .set_interrupt_enabled(gpio::Interrupt::EdgeLow, true);
+        self.pin2
+            .set_interrupt_enabled(gpio::Interrupt::EdgeHigh, true);
     }
 
     pub fn process(&mut self) -> u8 {

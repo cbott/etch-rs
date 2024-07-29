@@ -2,13 +2,14 @@
 #![no_std]
 #![no_main]
 
+use cortex_m::peripheral::mpu;
+use rp_pico::hal::fugit::HertzU32;
 // Provide an alias for our BSP so we can switch targets quickly.
 use rp_pico as bsp;
 
 // TODO: organize and clean up imports
 use bsp::entry;
 use core::cell::RefCell;
-use core::convert::Infallible;
 use critical_section::Mutex;
 use defmt::*;
 use defmt_rtt as _;
@@ -33,25 +34,39 @@ use core::ops::DerefMut;
 
 mod encoder;
 mod ra8875;
+use mpu_9250;
+
+// Pin Map
+// GPIO | Function
+//   07 | X encoder pin A
+//   08 | X encoder pin B
+//   09 | RA8875 reset
+//   10 | RA8875 chip select
+//   11 | External LED
+//   12 |
+//   13 | Y encoder pin A
+//   14 | Y encoder pin B
+//   15 |
+//   16 | SPI MISO
+//   17 |
+//   18 | SPI CLK
+//   19 | SPI MOSI
 
 // Pin types quickly become very long!
 // We'll create some type aliases using `type` to help with that
-type Encoder1APin = gpio::Pin<gpio::bank0::Gpio7, gpio::FunctionSioInput, gpio::PullUp>;
-type Encoder1BPin = gpio::Pin<gpio::bank0::Gpio8, gpio::FunctionSioInput, gpio::PullUp>;
-type Encoder2APin = gpio::Pin<gpio::bank0::Gpio13, gpio::FunctionSioInput, gpio::PullUp>;
-type Encoder2BPin = gpio::Pin<gpio::bank0::Gpio14, gpio::FunctionSioInput, gpio::PullUp>;
 type LedPin = gpio::Pin<gpio::bank0::Gpio11, gpio::FunctionSioOutput, gpio::PullNone>;
-type MyEncoder = encoder::Encoder<Encoder1APin, Encoder1BPin>;
+type EncoderX = encoder::Encoder<gpio::bank0::Gpio7, gpio::bank0::Gpio8>;
+type EncoderY = encoder::Encoder<gpio::bank0::Gpio13, gpio::bank0::Gpio14>;
 
 /// Since we're always accessing these pins together we'll store them in a tuple.
 /// Giving this tuple a type alias means we won't need to use () when putting them
 /// inside an Option. That will be easier to read.
-type InterruptPins = (LedPin, MyEncoder, Encoder2APin, Encoder2BPin);
+type InterruptObjs = (LedPin, EncoderX, EncoderY);
 
 /// This how we transfer our pins to the Interrupt Handler.
-/// We'll have the option hold both using the InterruptPins type.
+/// We'll have the option hold both using the InterruptObjs type.
 /// This will make it a bit easier to unpack them later.
-static GLOBAL_PINS: Mutex<RefCell<Option<InterruptPins>>> = Mutex::new(RefCell::new(None));
+static GLOBAL_PINS: Mutex<RefCell<Option<InterruptObjs>>> = Mutex::new(RefCell::new(None));
 static GLOBAL_VALUES: Mutex<RefCell<Option<(i16, i16)>>> = Mutex::new(RefCell::new(None));
 
 // For gpio toggle()
@@ -90,18 +105,44 @@ fn main() -> ! {
 
     let mut led_pin = pins.led.into_push_pull_output();
     let led_a: LedPin = pins.gpio11.reconfigure();
-    let pin_1a: Encoder1APin = pins.gpio7.reconfigure();
-    let pin_1b: Encoder1BPin = pins.gpio8.reconfigure();
-    let pin_2a: Encoder2APin = pins.gpio13.reconfigure();
-    let pin_2b: Encoder2BPin = pins.gpio14.reconfigure();
+    let pin_x1 = pins.gpio7.into_pull_up_input();
+    let pin_x2 = pins.gpio8.into_pull_up_input();
+    let pin_y1 = pins.gpio13.into_pull_up_input();
+    let pin_y2 = pins.gpio14.into_pull_up_input();
 
-    // Set up our GPIO interrupt stuff
-    pin_1a.set_interrupt_enabled(gpio::Interrupt::EdgeHigh, true);
-    pin_1a.set_interrupt_enabled(gpio::Interrupt::EdgeLow, true);
-    pin_2a.set_interrupt_enabled(gpio::Interrupt::EdgeHigh, true);
-    pin_2a.set_interrupt_enabled(gpio::Interrupt::EdgeLow, true);
+    let mut encoder_x = encoder::Encoder::new(pin_x1, pin_x2);
+    let mut encoder_y = encoder::Encoder::new(pin_y1, pin_y2);
+    encoder_x.enable_interrupts();
+    encoder_y.enable_interrupts();
 
-    let mut encoder1 = encoder::Encoder::new(pin_1a, pin_1b);
+    // I2C Stuff //////////////////////////////////////
+    // TODO: determine the actual pins we want to use
+    let i2c_sda = pins.gpio20.into_function::<hal::gpio::FunctionI2C>();
+    let i2c_scl = pins.gpio21.into_function::<hal::gpio::FunctionI2C>();
+    // TODO: move baudrates to constants
+    let i2c = hal::i2c::I2C::new_controller(
+        pac.I2C0,
+        i2c_sda,
+        i2c_scl,
+        400.kHz(),
+        &mut pac.RESETS,
+        clocks.peripheral_clock.freq(),
+    );
+    let mut imu = mpu_9250::MPU9250::new(i2c, mpu_9250::MPU9250_ADDRESS_AD0);
+
+    // Verify we're talking to the MPU 9250
+    let x: u8 = imu.read_byte(mpu_9250::MPU9250_ADDRESS_AD0, mpu_9250::WHO_AM_I_MPU9250);
+    if x != 0x71 {
+        loop {
+            // infinite error blink
+            led_pin.set_low().unwrap();
+            delay.delay_ms(100);
+            led_pin.set_high().unwrap();
+            delay.delay_ms(100);
+        }
+    }
+
+    //////////////// End ///////////////////////////
 
     // Set up SPI
     let spi_mosi = pins.gpio19.into_function::<hal::gpio::FunctionSpi>();
@@ -128,9 +169,8 @@ fn main() -> ! {
 
     let mut tft = ra8875::RA8875::new(spi, cs_pin);
 
-    let x: u8 = tft.read_reg(0);
-
     // Verify we're talking to the RA8875
+    let x: u8 = tft.read_reg(0);
     if x != 0x75 {
         loop {
             // infinite error blink
@@ -163,7 +203,7 @@ fn main() -> ! {
     critical_section::with(|cs| {
         GLOBAL_PINS
             .borrow(cs)
-            .replace(Some((led_a, encoder1, pin_2a, pin_2b)));
+            .replace(Some((led_a, encoder_x, encoder_y)));
         GLOBAL_VALUES.borrow(cs).replace(Some((25, 25)));
     });
 
@@ -176,6 +216,7 @@ fn main() -> ! {
     }
 
     // Go back to doing LCD stuff
+    // TODO: make this a const
     tft.fill_screen(0xAD6F);
     led_pin.set_low().unwrap();
     delay.delay_ms(1000);
@@ -201,12 +242,8 @@ fn main() -> ! {
 
 #[interrupt]
 fn IO_IRQ_BANK0() {
-    // The `#[interrupt]` attribute covertly converts this to `&'static mut Option<InterruptPins>`
-    static mut INTERRUPT_PINS: Option<InterruptPins> = None;
-
-    // Track current and previous encoder state
-    static mut ENCODER_1_STATE: u8 = 0;
-    static mut ENCODER_2_STATE: u8 = 0;
+    // The `#[interrupt]` attribute covertly converts this to `&'static mut Option<InterruptObjs>`
+    static mut INTERRUPT_PINS: Option<InterruptObjs> = None;
 
     // This is one-time lazy initialisation. We steal the variables given to us
     // via `GLOBAL_PINS`.
@@ -220,69 +257,48 @@ fn IO_IRQ_BANK0() {
         // borrow led and button by *destructuring* the tuple
         // these will be of type `&mut XXPin` so we don't have
         // to move them back into the static after we use them
-        let (led_a, encoder1, pin_2a, pin_2b) = gpios;
+        let (led_a, encoder_x, encoder_y) = gpios;
 
         // Process encoder 1 (X)
-        let result = encoder1.process();
-        if pin_1a.interrupt_status(gpio::Interrupt::EdgeHigh)
-            | pin_1a.interrupt_status(gpio::Interrupt::EdgeLow)
+        let mut result_x = encoder::DIR_NONE;
+        if encoder_x.pin1.interrupt_status(gpio::Interrupt::EdgeHigh)
+            | encoder_x.pin1.interrupt_status(gpio::Interrupt::EdgeLow)
+            | encoder_x.pin2.interrupt_status(gpio::Interrupt::EdgeHigh)
+            | encoder_x.pin2.interrupt_status(gpio::Interrupt::EdgeLow)
         {
-            // toggle can't fail, but the embedded-hal traits always allow for it
-            // we can discard the return value by assigning it to an unnamed variable
-            let _ = led_a.toggle();
-
-            *ENCODER_1_STATE <<= 2;
-            let a_state = pin_1a.is_high().unwrap();
-            let b_state = pin_1b.is_high().unwrap();
-            if a_state {
-                *ENCODER_1_STATE |= 0b01;
-            }
-            if b_state {
-                *ENCODER_1_STATE |= 0b10;
-            }
-            *ENCODER_1_STATE &= 0x0F;
-
-            // Our interrupt doesn't clear itself.
-            // Do that now so we don't immediately jump back to this interrupt handler.
-            pin_1a.clear_interrupt(gpio::Interrupt::EdgeHigh);
-            pin_1a.clear_interrupt(gpio::Interrupt::EdgeLow);
+            result_x = encoder_x.process();
+            encoder_x.pin1.clear_interrupt(gpio::Interrupt::EdgeHigh);
+            encoder_x.pin1.clear_interrupt(gpio::Interrupt::EdgeLow);
+            encoder_x.pin2.clear_interrupt(gpio::Interrupt::EdgeHigh);
+            encoder_x.pin2.clear_interrupt(gpio::Interrupt::EdgeLow);
         }
 
         // Process encoder 2 (Y)
-        if pin_2a.interrupt_status(gpio::Interrupt::EdgeHigh)
-            | pin_2a.interrupt_status(gpio::Interrupt::EdgeLow)
+        let mut result_y = encoder::DIR_NONE;
+        if encoder_y.pin1.interrupt_status(gpio::Interrupt::EdgeHigh)
+            | encoder_y.pin1.interrupt_status(gpio::Interrupt::EdgeLow)
+            | encoder_y.pin2.interrupt_status(gpio::Interrupt::EdgeHigh)
+            | encoder_y.pin2.interrupt_status(gpio::Interrupt::EdgeLow)
         {
-            // toggle can't fail, but the embedded-hal traits always allow for it
-            // we can discard the return value by assigning it to an unnamed variable
-            let _ = led_a.toggle();
-
-            *ENCODER_2_STATE <<= 2;
-            let a_state = pin_2a.is_high().unwrap();
-            let b_state = pin_2b.is_high().unwrap();
-            if a_state {
-                *ENCODER_2_STATE |= 0b01;
-            }
-            if b_state {
-                *ENCODER_2_STATE |= 0b10;
-            }
-            *ENCODER_2_STATE &= 0x0F;
-
-            // Our interrupt doesn't clear itself.
-            // Do that now so we don't immediately jump back to this interrupt handler.
-            pin_2a.clear_interrupt(gpio::Interrupt::EdgeHigh);
-            pin_2a.clear_interrupt(gpio::Interrupt::EdgeLow);
+            result_y = encoder_y.process();
+            encoder_y.pin1.clear_interrupt(gpio::Interrupt::EdgeHigh);
+            encoder_y.pin1.clear_interrupt(gpio::Interrupt::EdgeLow);
+            encoder_y.pin2.clear_interrupt(gpio::Interrupt::EdgeHigh);
+            encoder_y.pin2.clear_interrupt(gpio::Interrupt::EdgeLow);
         }
 
         critical_section::with(|cs| {
             if let Some(ref mut xy) = GLOBAL_VALUES.borrow(cs).borrow_mut().deref_mut() {
-                if *ENCODER_1_STATE == 0x09 {
+                // Update X value
+                if result_x == encoder::DIR_CW {
                     (*xy).0 += 1;
-                } else if *ENCODER_1_STATE == 0x03 {
+                } else if result_x == encoder::DIR_CCW {
                     (*xy).0 -= 1;
                 }
-                if *ENCODER_2_STATE == 0x09 {
+                // Update Y value
+                if result_y == encoder::DIR_CW {
                     (*xy).1 += 1;
-                } else if *ENCODER_2_STATE == 0x03 {
+                } else if result_y == encoder::DIR_CCW {
                     (*xy).1 -= 1;
                 }
             }
