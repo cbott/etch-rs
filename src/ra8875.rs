@@ -254,7 +254,7 @@ where
         // TODO: account for other sizes
         self.write_reg(RA8875_PLLC1, RA8875_PLLC1_PLLDIV1 + 11);
         // Hack to delay for ~1ms since I don't want to figure out how to pass the
-        // delay instance around. Pico clock iss 125MHz
+        // delay instance around. Pico clock is 125MHz
         cortex_m::asm::delay(125_000);
 
         self.write_reg(RA8875_PLLC2, RA8875_PLLC2_DIV4);

@@ -38,6 +38,8 @@ use mpu_9250;
 
 // Pin Map
 // GPIO | Function
+//   04 | I2C SDA
+//   05 | I2C SCL
 //   07 | X encoder pin A
 //   08 | X encoder pin B
 //   09 | RA8875 reset
@@ -115,16 +117,15 @@ fn main() -> ! {
     encoder_x.enable_interrupts();
     encoder_y.enable_interrupts();
 
-    // I2C Stuff //////////////////////////////////////
-    // TODO: determine the actual pins we want to use
-    let i2c_sda = pins.gpio20.into_function::<hal::gpio::FunctionI2C>();
-    let i2c_scl = pins.gpio21.into_function::<hal::gpio::FunctionI2C>();
+    // Set up the MPU 9250 IMU over I2C
+    let i2c_sda = pins.gpio4.into_function::<hal::gpio::FunctionI2C>();
+    let i2c_scl = pins.gpio5.into_function::<hal::gpio::FunctionI2C>();
     // TODO: move baudrates to constants
     let i2c = hal::i2c::I2C::new_controller(
         pac.I2C0,
         i2c_sda,
         i2c_scl,
-        400.kHz(),
+        100.kHz(),
         &mut pac.RESETS,
         clocks.peripheral_clock.freq(),
     );
@@ -142,9 +143,7 @@ fn main() -> ! {
         }
     }
 
-    //////////////// End ///////////////////////////
-
-    // Set up SPI
+    // Set up RA8875 LCD driver over SPI
     let spi_mosi = pins.gpio19.into_function::<hal::gpio::FunctionSpi>();
     let spi_miso = pins.gpio16.into_function::<hal::gpio::FunctionSpi>();
     let spi_sclk = pins.gpio18.into_function::<hal::gpio::FunctionSpi>();
