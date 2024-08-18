@@ -3,6 +3,8 @@
 #![no_main]
 
 use cortex_m::peripheral::mpu;
+use ra8875::LCD_HEIGHT;
+use ra8875::LCD_WIDTH;
 use rp_pico::hal::fugit::HertzU32;
 // Provide an alias for our BSP so we can switch targets quickly.
 use rp_pico as bsp;
@@ -36,28 +38,10 @@ mod encoder;
 mod ra8875;
 use mpu_9250;
 
-// Pin Map
-// GPIO | Function
-//   04 | I2C SDA
-//   05 | I2C SCL
-//   07 | X encoder pin A
-//   08 | X encoder pin B
-//   09 | RA8875 reset
-//   10 | RA8875 chip select
-//   11 | External LED
-//   12 |
-//   13 | Y encoder pin A
-//   14 | Y encoder pin B
-//   15 |
-//   16 | SPI MISO
-//   17 |
-//   18 | SPI CLK
-//   19 | SPI MOSI
-
 // Pin types quickly become very long!
 // We'll create some type aliases using `type` to help with that
 type LedPin = gpio::Pin<gpio::bank0::Gpio11, gpio::FunctionSioOutput, gpio::PullNone>;
-type EncoderX = encoder::Encoder<gpio::bank0::Gpio7, gpio::bank0::Gpio8>;
+type EncoderX = encoder::Encoder<gpio::bank0::Gpio9, gpio::bank0::Gpio10>;
 type EncoderY = encoder::Encoder<gpio::bank0::Gpio13, gpio::bank0::Gpio14>;
 
 /// Since we're always accessing these pins together we'll store them in a tuple.
@@ -73,6 +57,50 @@ static GLOBAL_VALUES: Mutex<RefCell<Option<(i16, i16)>>> = Mutex::new(RefCell::n
 
 // For gpio toggle()
 use embedded_hal::digital::StatefulOutputPin;
+
+const INITIAL_X_POS: i16 = ra8875::LCD_WIDTH / 2;
+const INITIAL_Y_POS: i16 = ra8875::LCD_HEIGHT / 2;
+
+const LOOP_DELAY_MS: u32 = 5;
+const NUM_CROSSINGS: u32 = 6;
+const ACCEL_DEADBAND: f32 = 0.5;
+const NUM_SAMPLES: usize = 1000 / LOOP_DELAY_MS as usize;
+
+// Determine if a time series of acceleration values contains a shaking motion
+fn detect_shake(samples: &[f32]) -> bool {
+    // First find the mean of the array
+    let mut sum: f32 = 0.0;
+    for val in samples {
+        sum += val;
+    }
+    let mean: f32 = sum / (samples.len() as f32);
+    // Then threshold the values above/below the mean, with some deadband
+    // -1/0/1 for below/deadband/above
+    // Then count the number of times we cross from above to below the mean
+    let mut crossings: u32 = 0;
+    let mut current_state: i8 = 0;
+    for val in samples {
+        // TODO: this is pretty messy
+        let mut new_state: i8 = 0;
+        let normalized_accel = val - mean;
+        if normalized_accel > ACCEL_DEADBAND {
+            new_state = 1;
+        } else if normalized_accel < -ACCEL_DEADBAND {
+            new_state = -1;
+        }
+        if new_state != 0 {
+            // current_state tracks the last acceleration value that was above the threshold
+            if new_state == -current_state {
+                // If our new state is opposite, we've crossed over the deadband
+                crossings += 1;
+            }
+            current_state = new_state;
+        }
+    }
+
+    // If this exceeds a certain count then we have a "shake"
+    return crossings >= NUM_CROSSINGS;
+}
 
 #[entry]
 fn main() -> ! {
@@ -106,9 +134,10 @@ fn main() -> ! {
     );
 
     let mut led_pin = pins.led.into_push_pull_output();
+    led_pin.set_high().unwrap();
     let led_a: LedPin = pins.gpio11.reconfigure();
-    let pin_x1 = pins.gpio7.into_pull_up_input();
-    let pin_x2 = pins.gpio8.into_pull_up_input();
+    let pin_x1 = pins.gpio9.into_pull_up_input();
+    let pin_x2 = pins.gpio10.into_pull_up_input();
     let pin_y1 = pins.gpio13.into_pull_up_input();
     let pin_y2 = pins.gpio14.into_pull_up_input();
 
@@ -134,6 +163,7 @@ fn main() -> ! {
     // Verify we're talking to the MPU 9250
     let x: u8 = imu.read_byte(mpu_9250::MPU9250_ADDRESS_AD0, mpu_9250::WHO_AM_I_MPU9250);
     if x != 0x71 {
+        // TODO: this should not block basic functioning of device, maybe display an error and move on
         loop {
             // infinite error blink
             led_pin.set_low().unwrap();
@@ -143,12 +173,15 @@ fn main() -> ! {
         }
     }
 
+    // Initialize imu for active mode read of acclerometer, gyroscope, and temperature
+    imu.init();
+
     // Set up RA8875 LCD driver over SPI
     let spi_mosi = pins.gpio19.into_function::<hal::gpio::FunctionSpi>();
     let spi_miso = pins.gpio16.into_function::<hal::gpio::FunctionSpi>();
     let spi_sclk = pins.gpio18.into_function::<hal::gpio::FunctionSpi>();
-    let mut cs_pin = pins.gpio10.into_push_pull_output();
-    let mut rst_pin = pins.gpio9.into_push_pull_output();
+    let mut cs_pin = pins.gpio17.into_push_pull_output();
+    let mut rst_pin = pins.gpio20.into_push_pull_output();
     let spi = hal::spi::Spi::<_, _, _, 8>::new(pac.SPI0, (spi_mosi, spi_miso, spi_sclk));
 
     // Equivalent of begin() method
@@ -193,17 +226,15 @@ fn main() -> ! {
     tft.pwm1_config(true, ra8875::RA8875_PWM_CLK_DIV1024);
     tft.pwm1_out(255);
 
-    // debug
-    tft.fill_screen(ra8875::RA8875_YELLOW);
-    delay.delay_ms(1000);
-
     // Give away our pins by moving them into the `GLOBAL_PINS` variable.
     // We won't need to access them in the main thread again
     critical_section::with(|cs| {
         GLOBAL_PINS
             .borrow(cs)
             .replace(Some((led_a, encoder_x, encoder_y)));
-        GLOBAL_VALUES.borrow(cs).replace(Some((25, 25)));
+        GLOBAL_VALUES
+            .borrow(cs)
+            .replace(Some((INITIAL_X_POS, INITIAL_Y_POS)));
     });
 
     // Unmask the IO_BANK0 IRQ so that the NVIC interrupt controller
@@ -220,22 +251,42 @@ fn main() -> ! {
     led_pin.set_low().unwrap();
     delay.delay_ms(1000);
 
+    let mut index: usize = 0;
+    let mut accel_samples: [f32; NUM_SAMPLES] = [0.0; NUM_SAMPLES];
+
+    let mut prev_x: i16 = INITIAL_X_POS;
+    let mut prev_y: i16 = INITIAL_Y_POS;
+
     loop {
         let mut x_pos: i16 = 0;
         let mut y_pos: i16 = 0;
-
         critical_section::with(|cs| {
             if let Some(ref mut value) = GLOBAL_VALUES.borrow(cs).borrow_mut().deref_mut() {
                 (x_pos, y_pos) = *value;
             }
         });
 
-        tft.draw_pixel(
-            x_pos % ra8875::LCD_WIDTH,
-            y_pos % ra8875::LCD_HEIGHT,
-            ra8875::RA8875_BLACK,
-        );
-        delay.delay_ms(10)
+        x_pos = x_pos % ra8875::LCD_WIDTH;
+        y_pos = y_pos % ra8875::LCD_HEIGHT;
+        // TODO: figure out draw_line to avoid skipping pixels
+        // tft.draw_line(prev_x, prev_y, x_pos, y_pos, ra8875::RA8875_BLACK);
+        tft.draw_pixel(x_pos, y_pos, ra8875::RA8875_BLACK);
+        prev_x = x_pos;
+        prev_y = y_pos;
+
+        // TODO: should we be checking has_data?
+        let (_, _, z_accel) = imu.read_accel_data();
+        accel_samples[index] = z_accel;
+        index = (index + 1) % accel_samples.len();
+
+        if detect_shake(&accel_samples) {
+            // Blank the screen
+            tft.fill_screen(0xAD6F);
+            // Reset the sample buffer to avoid clearing again
+            accel_samples.iter_mut().for_each(|x| *x = 0.0)
+        }
+
+        delay.delay_ms(LOOP_DELAY_MS);
     }
 }
 
@@ -290,15 +341,15 @@ fn IO_IRQ_BANK0() {
             if let Some(ref mut xy) = GLOBAL_VALUES.borrow(cs).borrow_mut().deref_mut() {
                 // Update X value
                 if result_x == encoder::DIR_CW {
-                    (*xy).0 += 1;
-                } else if result_x == encoder::DIR_CCW {
                     (*xy).0 -= 1;
+                } else if result_x == encoder::DIR_CCW {
+                    (*xy).0 += 1;
                 }
                 // Update Y value
                 if result_y == encoder::DIR_CW {
-                    (*xy).1 += 1;
-                } else if result_y == encoder::DIR_CCW {
                     (*xy).1 -= 1;
+                } else if result_y == encoder::DIR_CCW {
+                    (*xy).1 += 1;
                 }
             }
         });

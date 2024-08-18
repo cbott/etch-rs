@@ -155,4 +155,41 @@ where
         // Enable data ready (bit 0) interrupt
         self.write_byte(self.adr, INT_ENABLE, 0x01);
     }
+
+    // If intPin goes high, all data registers have new data
+    pub fn has_data(&mut self) -> bool {
+        self.read_byte(self.adr, INT_STATUS) & 0x01 != 0
+    }
+
+    // get resolution of accelerometer in g's per bit, based on configured full scale range
+    fn get_accelerometer_resolution(&self) -> f32 {
+        // TODO: could make this a property of MPU9250 and pre-calculate it
+        // ADCs are 16 bit, divide by 2 for full scale range (1<<16 / 2 = 32768)
+        (match self.a_scale {
+            AccelerometerScale::Afs2g => 2.0,
+            AccelerometerScale::Afs4g => 4.0,
+            AccelerometerScale::Afs8g => 8.0,
+            AccelerometerScale::Afs16g => 16.0,
+        }) / 32768.0
+    }
+
+    // read acceleration in g's, returns (x, y, z) axes
+    pub fn read_accel_data(&mut self) -> (f32, f32, f32) {
+        let mut rawdata: [u8; 6] = [0; 6];
+        // Read the six raw data registers into data array
+        self.read_bytes(self.adr, ACCEL_XOUT_H, &mut rawdata);
+        let resolution = self.get_accelerometer_resolution();
+
+        // Turn the MSB and LSB into a signed 16-bit value
+        let x_counts = ((rawdata[0] as i16) << 8) | (rawdata[1] as i16);
+        let x_g = (x_counts as f32) * resolution;
+
+        let y_counts = ((rawdata[2] as i16) << 8) | (rawdata[3] as i16);
+        let y_g = (y_counts as f32) * resolution;
+
+        let z_counts = ((rawdata[4] as i16) << 8) | (rawdata[5] as i16);
+        let z_g = (z_counts as f32) * resolution;
+
+        (x_g, y_g, z_g)
+    }
 }

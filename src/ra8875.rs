@@ -364,6 +364,48 @@ where
         self.write(&[RA8875_DATAWRITE, (color >> 8) as u8, color as u8]);
     }
 
+    // Draws a HW accelerated line on the display
+    pub fn draw_line(&mut self, x0: i16, y0: i16, x1: i16, y1: i16, color: u16) {
+        /* Set X */
+        self.write_command(0x91);
+        self.write_data(x0 as u8);
+        self.write_command(0x92);
+        self.write_data((x0 >> 8) as u8);
+
+        /* Set Y */
+        self.write_command(0x93);
+        self.write_data(y0 as u8);
+        self.write_command(0x94);
+        self.write_data((y0 >> 8) as u8);
+
+        /* Set X1 */
+        self.write_command(0x95);
+        self.write_data(x1 as u8);
+        self.write_command(0x96);
+        self.write_data((x1 >> 8) as u8);
+
+        /* Set Y1 */
+        self.write_command(0x97);
+        self.write_data(y1 as u8);
+        self.write_command(0x98);
+        self.write_data((y1 >> 8) as u8);
+
+        /* Set Color */
+        self.write_command(0x63);
+        self.write_data(((color & 0xf800) >> 11) as u8);
+        self.write_command(0x64);
+        self.write_data(((color & 0x07e0) >> 5) as u8);
+        self.write_command(0x65);
+        self.write_data((color & 0x001f) as u8);
+
+        /* Draw! */
+        self.write_command(RA8875_DCR);
+        self.write_data(0x80);
+
+        /* Wait for the command to finish */
+        self.wait_poll(RA8875_DCR, RA8875_DCR_LINESQUTRI_STATUS);
+    }
+
     // Fills the screen with the spefied RGB565 color
     pub fn fill_screen(&mut self, color: u16) {
         self.rect_helper(0, 0, LCD_WIDTH - 1, LCD_HEIGHT - 1, color, true);
@@ -371,8 +413,6 @@ where
 
     // Helper function for higher level rectangle drawing code
     fn rect_helper(&mut self, x: i16, y: i16, w: i16, h: i16, color: u16, filled: bool) {
-        // Not supporting rotation right now
-
         // Set X
         self.write_command(0x91);
         self.write_data(x as u8);

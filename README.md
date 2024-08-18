@@ -17,16 +17,12 @@ View the enclosure CAD model on [OnShape](https://cad.onshape.com/documents/e690
 | Battery | E-flite EFLB0990 7.4V 2S LiPoly Battery | 1 |
 | Toggle Switch | Any | 1 |
 
+## Schematic
+![etch-rs schematic](img/schematic.png)
+
 ## To Do list
-- Software
-    - Accelerometer code
-    - Fine tune cursor speed
-    - Organization and cleanup
-    - Use PIO for encoders
-- Electrical
-    - Create schematic
-    - Handle battery input
-    - Final wiring
-    - Custom PCB
-- Hardware
-    - Mounting features for wires and electronics
+- Software cleanup and organization
+- Use PIO for encoders
+- Adjust cursor speed and reduce pixel jumps
+- Create PCB to simplify wiring
+- Build wire management features into enclosure
