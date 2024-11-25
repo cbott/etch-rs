@@ -2,64 +2,56 @@
 #![no_std]
 #![no_main]
 
-use cortex_m::peripheral::mpu;
-use ra8875::LCD_HEIGHT;
-use ra8875::LCD_WIDTH;
-use rp_pico::hal::fugit::HertzU32;
 // Provide an alias for our BSP so we can switch targets quickly.
-use rp_pico as bsp;
+use rp_pico::{self as bsp, hal::fugit::Rate};
 
 // TODO: organize and clean up imports
 use bsp::entry;
 use core::cell::RefCell;
+use core::ops::DerefMut;
 use critical_section::Mutex;
 use defmt::*;
 use defmt_rtt as _;
-use embedded_hal::digital::InputPin;
-use embedded_hal::digital::OutputPin;
 use panic_probe as _;
 
 use bsp::hal::{
     self,
     clocks::{init_clocks_and_plls, Clock},
-    gpio, pac,
+    fugit::HertzU32,
+    fugit::RateExtU32, // For specifying SPI rates with MHz function
+    gpio,
+    pac,
+    pac::interrupt, // Interrupt macro
     sio::Sio,
     watchdog::Watchdog,
 };
 
-// Needed for specifying SPI rates with MHz function
-use hal::fugit::RateExtU32;
+use embedded_hal::digital::{
+    OutputPin,
+    StatefulOutputPin, // For gpio toggle()
+};
 
-// Interrupt macro
-use bsp::hal::pac::interrupt;
-use core::ops::DerefMut;
-
+// Local libraries
 mod encoder;
-mod ra8875;
 use mpu_9250;
+use ra8875;
 
-// Pin types quickly become very long!
-// We'll create some type aliases using `type` to help with that
-type LedPin = gpio::Pin<gpio::bank0::Gpio11, gpio::FunctionSioOutput, gpio::PullNone>;
+// Define type aliases to shorten up definitions later
 type EncoderX = encoder::Encoder<gpio::bank0::Gpio9, gpio::bank0::Gpio10>;
 type EncoderY = encoder::Encoder<gpio::bank0::Gpio13, gpio::bank0::Gpio14>;
 
-/// Since we're always accessing these pins together we'll store them in a tuple.
-/// Giving this tuple a type alias means we won't need to use () when putting them
-/// inside an Option. That will be easier to read.
-type InterruptObjs = (LedPin, EncoderX, EncoderY);
-
-/// This how we transfer our pins to the Interrupt Handler.
-/// We'll have the option hold both using the InterruptObjs type.
-/// This will make it a bit easier to unpack them later.
-static GLOBAL_PINS: Mutex<RefCell<Option<InterruptObjs>>> = Mutex::new(RefCell::new(None));
+// Define the structures which will be passed in and out of the Interrupt Handler
+// Objects will only be passed in once and not used by the main thread after
+// while Values will be need to be read back in the main thread
+static GLOBAL_OBJS: Mutex<RefCell<Option<(EncoderX, EncoderY)>>> = Mutex::new(RefCell::new(None));
 static GLOBAL_VALUES: Mutex<RefCell<Option<(i16, i16)>>> = Mutex::new(RefCell::new(None));
 
-// For gpio toggle()
-use embedded_hal::digital::StatefulOutputPin;
-
+// constants to define etch-rs behavior
 const INITIAL_X_POS: i16 = ra8875::LCD_WIDTH / 2;
 const INITIAL_Y_POS: i16 = ra8875::LCD_HEIGHT / 2;
+const BACKGROUND_COLOR: u16 = 0x7BC7; // 0x7bc7 per william
+const I2C_BAUD: HertzU32 = HertzU32::kHz(100);
+const SPI_BAUD: HertzU32 = HertzU32::MHz(2);
 
 const LOOP_DELAY_MS: u32 = 5;
 const NUM_CROSSINGS: u32 = 6;
@@ -105,6 +97,7 @@ fn detect_shake(samples: &[f32]) -> bool {
 #[entry]
 fn main() -> ! {
     info!("Program start");
+    // Board setup
     let mut pac = pac::Peripherals::take().unwrap();
     let core = pac::CorePeripherals::take().unwrap();
     let mut watchdog = Watchdog::new(pac.WATCHDOG);
@@ -126,6 +119,20 @@ fn main() -> ! {
 
     let mut delay = cortex_m::delay::Delay::new(core.SYST, clocks.system_clock.freq().to_Hz());
 
+    // Configure pins
+
+    // Set up display
+
+    // Set up encoders
+
+    // Set up IMU
+
+    // Set up cursor
+
+    // Enable interrupts (if not handled by encoder)
+
+    // Start mainloop
+
     let pins = bsp::Pins::new(
         pac.IO_BANK0,
         pac.PADS_BANK0,
@@ -135,7 +142,6 @@ fn main() -> ! {
 
     let mut led_pin = pins.led.into_push_pull_output();
     led_pin.set_high().unwrap();
-    let led_a: LedPin = pins.gpio11.reconfigure();
     let pin_x1 = pins.gpio9.into_pull_up_input();
     let pin_x2 = pins.gpio10.into_pull_up_input();
     let pin_y1 = pins.gpio13.into_pull_up_input();
@@ -149,26 +155,25 @@ fn main() -> ! {
     // Set up the MPU 9250 IMU over I2C
     let i2c_sda = pins.gpio4.into_function::<hal::gpio::FunctionI2C>();
     let i2c_scl = pins.gpio5.into_function::<hal::gpio::FunctionI2C>();
-    // TODO: move baudrates to constants
     let i2c = hal::i2c::I2C::new_controller(
         pac.I2C0,
         i2c_sda,
         i2c_scl,
-        100.kHz(),
+        I2C_BAUD,
         &mut pac.RESETS,
         clocks.peripheral_clock.freq(),
     );
     let mut imu = mpu_9250::MPU9250::new(i2c, mpu_9250::MPU9250_ADDRESS_AD0);
 
     // Verify we're talking to the MPU 9250
+    // TODO: make "check whoami" method in the lib?
+    // could return Ok() or the failing byte?
     let x: u8 = imu.read_byte(mpu_9250::MPU9250_ADDRESS_AD0, mpu_9250::WHO_AM_I_MPU9250);
     if x != 0x71 {
         // TODO: this should not block basic functioning of device, maybe display an error and move on
         loop {
             // infinite error blink
-            led_pin.set_low().unwrap();
-            delay.delay_ms(100);
-            led_pin.set_high().unwrap();
+            led_pin.toggle().unwrap();
             delay.delay_ms(100);
         }
     }
@@ -195,7 +200,7 @@ fn main() -> ! {
     let spi = spi.init(
         &mut pac.RESETS,
         clocks.peripheral_clock.freq(),
-        2.MHz(),
+        SPI_BAUD,
         embedded_hal::spi::MODE_0,
     );
 
@@ -226,12 +231,10 @@ fn main() -> ! {
     tft.pwm1_config(true, ra8875::RA8875_PWM_CLK_DIV1024);
     tft.pwm1_out(255);
 
-    // Give away our pins by moving them into the `GLOBAL_PINS` variable.
-    // We won't need to access them in the main thread again
+    // Give away our ownership by moving them into the `GLOBAL_OBJS` variable.
+    // We will take back ownership of the values later when we need to read them
     critical_section::with(|cs| {
-        GLOBAL_PINS
-            .borrow(cs)
-            .replace(Some((led_a, encoder_x, encoder_y)));
+        GLOBAL_OBJS.borrow(cs).replace(Some((encoder_x, encoder_y)));
         GLOBAL_VALUES
             .borrow(cs)
             .replace(Some((INITIAL_X_POS, INITIAL_Y_POS)));
@@ -247,7 +250,7 @@ fn main() -> ! {
 
     // Go back to doing LCD stuff
     // TODO: make this a const
-    tft.fill_screen(0xAD6F);
+    tft.fill_screen(BACKGROUND_COLOR);
     led_pin.set_low().unwrap();
     delay.delay_ms(1000);
 
@@ -265,9 +268,9 @@ fn main() -> ! {
                 (x_pos, y_pos) = *value;
             }
         });
-
         x_pos = x_pos % ra8875::LCD_WIDTH;
         y_pos = y_pos % ra8875::LCD_HEIGHT;
+
         // TODO: figure out draw_line to avoid skipping pixels
         // tft.draw_line(prev_x, prev_y, x_pos, y_pos, ra8875::RA8875_BLACK);
         tft.draw_pixel(x_pos, y_pos, ra8875::RA8875_BLACK);
@@ -281,7 +284,7 @@ fn main() -> ! {
 
         if detect_shake(&accel_samples) {
             // Blank the screen
-            tft.fill_screen(0xAD6F);
+            tft.fill_screen(BACKGROUND_COLOR);
             // Reset the sample buffer to avoid clearing again
             accel_samples.iter_mut().for_each(|x| *x = 0.0)
         }
@@ -293,21 +296,18 @@ fn main() -> ! {
 #[interrupt]
 fn IO_IRQ_BANK0() {
     // The `#[interrupt]` attribute covertly converts this to `&'static mut Option<InterruptObjs>`
-    static mut INTERRUPT_PINS: Option<InterruptObjs> = None;
+    static mut INTERRUPT_PINS: Option<(EncoderX, EncoderY)> = None;
 
-    // This is one-time lazy initialisation. We steal the variables given to us
-    // via `GLOBAL_PINS`.
+    // This is one-time lazy initialisation. We steal the variables given to us via `GLOBAL_OBJS`.
     if INTERRUPT_PINS.is_none() {
         critical_section::with(|cs| {
-            *INTERRUPT_PINS = GLOBAL_PINS.borrow(cs).take();
+            *INTERRUPT_PINS = GLOBAL_OBJS.borrow(cs).take();
         });
     }
 
     if let Some(gpios) = INTERRUPT_PINS {
-        // borrow led and button by *destructuring* the tuple
-        // these will be of type `&mut XXPin` so we don't have
-        // to move them back into the static after we use them
-        let (led_a, encoder_x, encoder_y) = gpios;
+        // mutable borrow of encoders to let us read and update them
+        let (encoder_x, encoder_y) = gpios;
 
         // Process encoder 1 (X)
         let mut result_x = encoder::DIR_NONE;

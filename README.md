@@ -1,7 +1,7 @@
 # etch-rs
 A digital etch-a-sketch, programmed in Rust
 
-![etch-rs](img/etch-rs.png)
+![etch-rs](img/etch-rs-front.png)
 
 ## Parts
 View the enclosure CAD model on [OnShape](https://cad.onshape.com/documents/e690354f5c07f20bde7623b1/w/a182bf3fbff4dd99a6671f5c/e/9b6cb06694b79f0122820339?renderMode=0&uiState=66b0045b4d7bf54af7cd6bd1)
